@@ -1,0 +1,19 @@
+<library path="humanoid_mock_driver">
+  <class
+    name="humanoid_driver_runtime/MockRobotDriver"
+    type="humanoid_driver_runtime::MockRobotDriver"
+    base_class_type="humanoid_driver_interface::RobotDriverPlugin">
+    <description>Deterministic SI-unit position-loop mock humanoid driver.</description>
+  </class>
+</library>
+<library path="humanoid_ros_topic_driver">
+  <class
+    name="humanoid_driver_runtime/RosTopicRobotDriver"
+    type="humanoid_driver_runtime::RosTopicRobotDriver"
+    base_class_type="humanoid_driver_interface::RobotDriverPlugin">
+    <description>
+      Configurable adapter between the unified SI joint-driver contract and vendor ROS 2
+      sensor_msgs/JointState state and position-command topics.
+    </description>
+  </class>
+</library>

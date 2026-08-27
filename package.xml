@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>humanoid_driver_runtime</name>
+  <version>0.1.0</version>
+  <description>ROS 2 runtime that loads humanoid driver plugins behind the platform joint topics.</description>
+  <maintainer email="czy33114@gmail.com">czy</maintainer>
+  <license>Proprietary</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>diagnostic_msgs</depend>
+  <depend>humanoid_driver_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <humanoid_driver_interface plugin="${prefix}/plugins/driver_plugins.xml"/>
+  </export>
+</package>
