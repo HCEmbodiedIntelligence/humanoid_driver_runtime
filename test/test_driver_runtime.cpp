@@ -105,6 +105,25 @@ TEST(DriverRuntime, RequestedPluginFailureIsExplicitAndHasNoFallback)
   EXPECT_THROW(hmsd::DriverRuntime runtime(invalid), std::runtime_error);
 }
 
+TEST(DriverRuntime, LoadsPluginFromExplicitDescriptionPath)
+{
+  auto explicit_config = config();
+  explicit_config.plugin_xml_paths = {HUMANOID_RUNTIME_TEST_PLUGIN_XML};
+  hmsd::DriverRuntime runtime(explicit_config);
+  EXPECT_TRUE(runtime.read().successful);
+}
+
+TEST(DriverRuntime, RejectsInvalidExplicitPluginDescriptionPaths)
+{
+  auto invalid = config();
+  invalid.plugin_xml_paths = {"relative/plugins.xml"};
+  EXPECT_THROW(hmsd::DriverRuntime runtime(invalid), std::invalid_argument);
+
+  invalid = config();
+  invalid.plugin_xml_paths = {"/does/not/exist/plugins.xml"};
+  EXPECT_THROW(hmsd::DriverRuntime runtime(invalid), std::invalid_argument);
+}
+
 TEST(DriverRuntime, ConfigurationRejectsDuplicateMappings)
 {
   auto invalid = config();

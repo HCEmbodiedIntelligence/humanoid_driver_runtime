@@ -37,6 +37,8 @@ public:
   : Node("humanoid_driver_runtime")
   {
     plugin_class_ = declare_parameter<std::string>("plugin_class", "");
+    const auto plugin_xml_paths = declare_parameter<std::vector<std::string>>(
+      "plugin_xml_paths", std::vector<std::string>{});
     const auto joint_names = declare_parameter<std::vector<std::string>>(
       "joint_names", std::vector<std::string>{});
     const auto vendor_joint_names = declare_parameter<std::vector<std::string>>(
@@ -92,6 +94,7 @@ public:
 
     DriverRuntimeConfig config;
     config.plugin_class = plugin_class_;
+    config.plugin_xml_paths = plugin_xml_paths;
     config.command_watchdog = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::duration<double, std::milli>(command_watchdog_ms));
     config.ros_node = this;

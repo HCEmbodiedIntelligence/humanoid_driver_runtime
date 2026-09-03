@@ -26,6 +26,10 @@ namespace humanoid_driver_runtime
 struct DriverRuntimeConfig
 {
   std::string plugin_class;
+  // Optional explicit plugin description files for Web-deployed binary plugins. When empty,
+  // pluginlib uses the normal ament index. Explicit files must still belong to an installed
+  // ament prefix so pluginlib can resolve the exporting package and shared library safely.
+  std::vector<std::string> plugin_xml_paths;
   humanoid_driver_interface::DriverConfiguration plugin_configuration;
   std::chrono::milliseconds command_watchdog{100};
   // Required only when plugin_class implements Ros2DriverPlugin. The runtime node owns this
@@ -83,7 +87,7 @@ private:
   void stopLocked(const std::string & reason, bool driver_fault);
   void shutdownLocked() noexcept;
 
-  pluginlib::ClassLoader<RobotDriverPlugin> plugin_loader_;
+  std::unique_ptr<pluginlib::ClassLoader<RobotDriverPlugin>> plugin_loader_;
   std::shared_ptr<RobotDriverPlugin> plugin_;
   std::vector<JointMapping> joint_mappings_;
   std::unordered_map<std::string, JointMapping> mapping_by_logical_name_;

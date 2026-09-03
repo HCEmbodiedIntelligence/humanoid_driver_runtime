@@ -84,5 +84,8 @@ humanoid_driver_runtime:
       - endpoint=192.168.1.10
 ```
 
-构建并 source 插件包后，通用 runtime 会从 pluginlib 索引发现这个类。新增或切换厂商驱动只改
-profile/YAML 的包资源和 `plugin_class`，不修改 `humanoid_driver_runtime` 或运动服务源码。
+源码开发时，构建并 source 插件包后，通用 runtime 会从 pluginlib 索引发现这个类。目标机不编译：
+开发机或 CI 把共享库、plugin XML、package.xml 和最小 ament marker 打成硬件部署 ZIP，Web 后端使用
+`humanoid_pluginctl.py` 验证并直接覆盖部署。启动器把绝对 `plugin_xml_paths` 注入 runtime，因此新增或
+切换厂商驱动不修改 `humanoid_driver_runtime` 或运动服务源码。当前调试期包格式和部署流程见
+`humanoid_adapter_manager/docs/deploying_plugins.md`。

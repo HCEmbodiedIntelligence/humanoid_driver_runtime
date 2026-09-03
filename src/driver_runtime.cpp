@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -17,18 +18,20 @@ namespace humanoid_driver_runtime
 {
 
 DriverRuntime::DriverRuntime(const DriverRuntimeConfig & config)
-: plugin_loader_("humanoid_driver_interface", "humanoid_driver_interface::RobotDriverPlugin"),
-  joint_mappings_(config.plugin_configuration.joints),
+: joint_mappings_(config.plugin_configuration.joints),
   watchdog_timeout_(config.command_watchdog),
   last_command_time_(std::chrono::steady_clock::now())
 {
   validateConfiguration(config);
+  plugin_loader_ = std::make_unique<pluginlib::ClassLoader<RobotDriverPlugin>>(
+    "humanoid_driver_interface", "humanoid_driver_interface::RobotDriverPlugin", "plugin",
+    config.plugin_xml_paths);
   for (const auto & mapping : joint_mappings_) {
     mapping_by_logical_name_.emplace(mapping.logical_name, mapping);
   }
 
   try {
-    plugin_ = plugin_loader_.createSharedInstance(config.plugin_class);
+    plugin_ = plugin_loader_->createSharedInstance(config.plugin_class);
   } catch (const pluginlib::PluginlibException & error) {
     throw std::runtime_error(
             "failed to load requested driver plugin '" + config.plugin_class + "': " +
@@ -222,6 +225,16 @@ void DriverRuntime::validateConfiguration(const DriverRuntimeConfig & config)
   }
   if (config.plugin_configuration.joints.empty()) {
     throw std::invalid_argument("at least one driver joint mapping is required");
+  }
+  std::unordered_set<std::string> plugin_xml_paths;
+  for (const auto & path_text : config.plugin_xml_paths) {
+    const std::filesystem::path path(path_text);
+    if (!path.is_absolute() || !std::filesystem::is_regular_file(path) ||
+      !plugin_xml_paths.insert(std::filesystem::weakly_canonical(path).string()).second)
+    {
+      throw std::invalid_argument(
+              "explicit driver plugin XML paths must be unique absolute regular files");
+    }
   }
   std::unordered_set<std::string> logical_names;
   std::unordered_set<std::string> vendor_keys;

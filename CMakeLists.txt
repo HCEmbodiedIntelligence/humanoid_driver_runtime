@@ -75,6 +75,8 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_driver_runtime test/test_driver_runtime.cpp)
   target_link_libraries(test_driver_runtime humanoid_driver_runtime_core)
+  target_compile_definitions(test_driver_runtime PRIVATE
+    HUMANOID_RUNTIME_TEST_PLUGIN_XML="${CMAKE_CURRENT_SOURCE_DIR}/plugins/driver_plugins.xml")
 
   ament_add_gtest(test_mock_lifecycle test/test_mock_lifecycle.cpp)
   target_link_libraries(test_mock_lifecycle humanoid_mock_driver)
