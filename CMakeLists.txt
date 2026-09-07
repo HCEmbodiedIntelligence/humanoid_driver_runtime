@@ -16,7 +16,8 @@ find_package(sensor_msgs REQUIRED)
 
 add_library(humanoid_driver_runtime_core SHARED
   src/diagnostics_runtime.cpp
-  src/driver_runtime.cpp)
+  src/driver_runtime.cpp
+  src/gripper_runtime.cpp)
 target_include_directories(humanoid_driver_runtime_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
@@ -57,11 +58,21 @@ ament_target_dependencies(humanoid_driver_runtime_node
   rclcpp
   sensor_msgs)
 
+add_executable(humanoid_gripper_runtime_node src/humanoid_gripper_runtime_node.cpp)
+target_compile_options(humanoid_gripper_runtime_node PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(humanoid_gripper_runtime_node humanoid_driver_runtime_core)
+ament_target_dependencies(humanoid_gripper_runtime_node
+  diagnostic_msgs
+  humanoid_driver_interface
+  rclcpp
+  sensor_msgs)
+
 install(TARGETS
   humanoid_driver_runtime_core
   humanoid_mock_driver
   humanoid_ros_topic_driver
   humanoid_driver_runtime_node
+  humanoid_gripper_runtime_node
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

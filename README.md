@@ -1,12 +1,16 @@
 # humanoid_driver_runtime
 
-这是平台统一驱动节点所在的包，也是 `RobotDriverPlugin` 的唯一加载者。它负责：
+这是平台设备运行层，同时提供彼此独立的机械臂和夹爪运行节点：
 
 - 订阅统一命令 `/hc_teleop/joint_cmd`；
 - 调用已加载驱动的 `writeJointCommand()`；
 - 调用驱动读取真实状态并发布 `/hc_teleop/joint_states`；
 - 管理驱动的配置、连接、激活、停止生命周期；
 - 执行命令看门狗并发布 `/diagnostics`。
+
+`humanoid_gripper_runtime_node` 以相同的生命周期加载 `GripperDriverPlugin`，平台侧使用
+`/hc_teleop/gripper_commands` 和 `/hc_teleop/gripper_states` 两个具名 `JointState` 话题。夹爪
+插件可以控制一个或多个夹爪，但不会进入机械臂的 14 轴运动关节集合。
 
 `humanoid_driver_interface` 只定义驱动必须实现的 C++ 规范，本包才是运行这个规范的节点。
 `humanoid_motion_server` 不知道具体机器人，也不会直接加载驱动。

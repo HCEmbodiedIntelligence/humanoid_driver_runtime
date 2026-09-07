@@ -2,7 +2,7 @@
 <package format="3">
   <name>humanoid_driver_runtime</name>
   <version>0.1.0</version>
-  <description>ROS 2 runtime that loads humanoid driver plugins behind the platform joint topics.</description>
+  <description>ROS 2 runtimes for independent robot-joint and gripper driver plugins.</description>
   <maintainer email="czy33114@gmail.com">czy</maintainer>
   <license>Proprietary</license>
 
