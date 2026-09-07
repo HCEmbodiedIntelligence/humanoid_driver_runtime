@@ -88,4 +88,4 @@ humanoid_driver_runtime:
 开发机或 CI 把共享库、plugin XML、package.xml 和最小 ament marker 打成硬件部署 ZIP，Web 后端使用
 `humanoid_pluginctl.py` 验证并直接覆盖部署。启动器把绝对 `plugin_xml_paths` 注入 runtime，因此新增或
 切换厂商驱动不修改 `humanoid_driver_runtime` 或运动服务源码。当前调试期包格式和部署流程见
-`humanoid_adapter_manager/docs/deploying_plugins.md`。
+`humanoid_manager/docs/deploying_plugins.md`。
