@@ -7,6 +7,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
@@ -39,6 +40,8 @@ public:
       "plugin_xml_paths", std::vector<std::string>{});
     const auto names = declare_parameter<std::vector<std::string>>(
       "gripper_names", std::vector<std::string>{});
+    owned_names_ = std::unordered_set<std::string>(names.begin(), names.end());
+    filter_unowned_ = declare_parameter<bool>("filter_unowned_commands", false);
     const auto vendor_names = declare_parameter<std::vector<std::string>>(
       "vendor_gripper_names", std::vector<std::string>{});
     const auto units = declare_parameter<std::vector<std::string>>(
@@ -154,6 +157,28 @@ private:
     command.gripper_names = message.name;
     command.positions = message.position;
     command.max_efforts = message.effort;
+    if (filter_unowned_) {
+      // Validate the whole message before indexing; unrelated names never feed the watchdog.
+      std::unordered_set<std::string> seen;
+      if (message.name.size() != message.position.size() ||
+        (!message.effort.empty() && message.effort.size() != message.name.size()) ||
+        !finite(message.position) || !finite(message.effort) ||
+        !std::all_of(message.name.begin(), message.name.end(), [&seen](const auto & name) {
+          return !name.empty() && seen.insert(name).second;
+        }))
+      {
+        RCLCPP_ERROR(get_logger(), "malformed shared gripper command rejected");
+        return;
+      }
+      command = {};
+      for (std::size_t i = 0; i < message.name.size(); ++i) {
+        if (owned_names_.count(message.name[i]) == 0U) {continue;}
+        command.gripper_names.push_back(message.name[i]);
+        command.positions.push_back(message.position[i]);
+        if (!message.effort.empty()) {command.max_efforts.push_back(message.effort[i]);}
+      }
+      if (command.gripper_names.empty()) {return;}
+    }
     std::string error;
     if (!runtime_->write(command, error)) {
       RCLCPP_ERROR(get_logger(), "platform gripper command rejected: %s", error.c_str());
@@ -176,6 +201,8 @@ private:
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr diagnostic_timer_;
   bool feedback_ready_{false};
+  bool filter_unowned_{false};
+  std::unordered_set<std::string> owned_names_;
 };
 
 }  // namespace

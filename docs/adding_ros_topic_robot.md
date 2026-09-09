@@ -86,7 +86,7 @@ humanoid_driver_runtime:
 
 ## OpenArmX MuJoCo 端到端示例
 
-工作区的 `openarmx_mujoco` 原本没有 ROS topic。新增的 `ros2_bridge.py` 故意以一个厂商驱动的形式暴露 OpenArmX 原生关节名和 topic；[openarmx_mujoco_driver.yaml](../config/openarmx_mujoco_driver.yaml) 则是平台的 mapping 配置。
+工作区的 `openarmx_mujoco` 原本没有 ROS topic。新增的 `ros2_bridge.py` 故意以一个厂商驱动的形式暴露 OpenArmX 原生关节名和 topic；[openarmx_mujoco_driver.yaml](../../openarmx_driver/config/openarmx_mujoco_driver.yaml) 则是平台的 mapping 配置。
 
 先构建并 source 工作区：
 
@@ -112,7 +112,7 @@ python3 ros2_bridge.py
 source /opt/ros/humble/setup.bash
 source /home/czy/teleop_ws/install/setup.bash
 ros2 run humanoid_driver_runtime humanoid_driver_runtime_node --ros-args \
-  --params-file /home/czy/teleop_ws/install/humanoid_driver_runtime/share/humanoid_driver_runtime/config/openarmx_mujoco_driver.yaml
+  --params-file /home/czy/teleop_ws/install/openarmx_driver/share/openarmx_driver/config/openarmx_mujoco_driver.yaml
 ```
 
 预期终端 B 先短暂显示 `awaiting first valid ROS joint-state sample`，随后显示 `driver feedback is active`。终端 C 可以看到经过配置映射的平台逻辑反馈：

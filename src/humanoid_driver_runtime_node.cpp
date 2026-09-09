@@ -200,7 +200,7 @@ private:
     }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 2000,
-      "TRACE driver OUT /openarmx/vendor/joint_command joints=%zu first_position=%.4f",
+      "TRACE driver command accepted by plugin joints=%zu first_position=%.4f",
       command.joint_names.size(), first_position);
   }
 
