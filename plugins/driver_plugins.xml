@@ -1,3 +1,4 @@
+<class_libraries>
 <library path="humanoid_mock_driver">
   <class
     name="humanoid_driver_runtime/MockRobotDriver"
@@ -17,3 +18,4 @@
     </description>
   </class>
 </library>
+</class_libraries>
