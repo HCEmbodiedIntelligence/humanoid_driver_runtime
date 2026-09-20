@@ -72,6 +72,7 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::configure(
 
   std::string state_topic;
   std::string command_topic;
+  std::map<std::string, std::string> group_topics;
   double state_timeout_seconds = 0.25;
   double startup_grace_seconds = 3.0;
   try {
@@ -80,6 +81,8 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::configure(
         state_topic = value;
       } else if (key == "command_topic") {
         command_topic = value;
+      } else if (key.rfind("command_topic.", 0) == 0 && key.size() > 14U) {
+        group_topics.emplace(key.substr(14), value);
       } else if (key == "state_timeout_s") {
         state_timeout_seconds = parseFiniteSeconds(key, value);
       } else if (key == "startup_grace_s") {
@@ -91,10 +94,10 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::configure(
   } catch (const std::exception & error) {
     return Result::failure(hdi::DriverError::kInvalidConfiguration, error.what());
   }
-  if (state_topic.empty() || command_topic.empty()) {
+  if (state_topic.empty() || (command_topic.empty() == group_topics.empty())) {
     return Result::failure(
       hdi::DriverError::kInvalidConfiguration,
-      "state_topic and command_topic are required ROS topic driver parameters");
+      "state_topic and exactly one of command_topic or command_topic.<group> are required");
   }
 
   std::unordered_set<std::string> logical_names;
@@ -118,15 +121,41 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::configure(
     }
   }
 
+  if (!group_topics.empty()) {
+    std::unordered_set<std::string> groups;
+    std::unordered_set<std::string> topics;
+    for (const auto & mapping : configuration.joints) {
+      groups.insert(mapping.vendor_group);
+    }
+    for (const auto & [group, topic] : group_topics) {
+      if (!groups.erase(group) || topic.empty() || !topics.insert(topic).second) {
+        return Result::failure(hdi::DriverError::kInvalidConfiguration,
+          "group command topics must uniquely cover the configured joint groups");
+      }
+    }
+    if (!groups.empty()) {
+      return Result::failure(hdi::DriverError::kInvalidConfiguration,
+        "a configured joint group has no command topic");
+    }
+  }
   try {
-    command_publisher_ = node_->create_publisher<sensor_msgs::msg::JointState>(
-      command_topic, rclcpp::QoS(10).reliable());
+    group_publishers_.clear();
+    command_publisher_.reset();
+    if (!command_topic.empty()) {
+      command_publisher_ = node_->create_publisher<sensor_msgs::msg::JointState>(
+        command_topic, rclcpp::QoS(10).reliable());
+    }
+    for (const auto & [group, topic] : group_topics) {
+      group_publishers_[group] = node_->create_publisher<std_msgs::msg::Float64MultiArray>(
+        topic, rclcpp::QoS(10).reliable());
+    }
     state_subscription_ = node_->create_subscription<sensor_msgs::msg::JointState>(
-      state_topic, rclcpp::SensorDataQoS(),
+      state_topic, rclcpp::SensorDataQoS().keep_last(1),
       [this](const sensor_msgs::msg::JointState::SharedPtr message) {stateCallback(message);});
   } catch (const std::exception & error) {
     command_publisher_.reset();
     state_subscription_.reset();
+    group_publishers_.clear();
     return Result::failure(
       hdi::DriverError::kInternal, "failed to create ROS topic endpoints: " + std::string(error.what()));
   }
@@ -146,6 +175,8 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::configure(
     std::chrono::duration<double>(startup_grace_seconds));
   configured_at_ = Clock::now();
   latest_state_ = {};
+  source_timestamp_ = {};
+  position_targets_.clear();
   last_state_received_ = configured_at_;
   last_feedback_error_.clear();
   configured_ = true;
@@ -164,7 +195,7 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::connect()
     return Result::failure(
       hdi::DriverError::kInvalidState, "configure an inactive ROS topic driver before connect");
   }
-  if (!state_subscription_ || !command_publisher_) {
+  if (!state_subscription_ || (!command_publisher_ && group_publishers_.empty())) {
     return Result::failure(hdi::DriverError::kInternal, "ROS topic endpoints are unavailable");
   }
   connected_ = true;
@@ -381,8 +412,21 @@ void RosTopicRobotDriver::stateCallback(const sensor_msgs::msg::JointState::Shar
       next_state.efforts.push_back(message->effort[index] / mapping.vendor_to_logical_scale);
     }
   }
-  next_state.sample_time = Clock::now();
+  if (message->header.stamp.sec < 0 || message->header.stamp.nanosec >= 1000000000U ||
+    !source_timestamp_.accept(
+      static_cast<std::int64_t>(message->header.stamp.sec) * 1000000000LL +
+      message->header.stamp.nanosec, node_->now().nanoseconds(), Clock::now(),
+      state_timeout_, next_state.sample_time))
+  {
+    last_feedback_error_ = "vendor JointState timestamp is stale, repeated or invalid";
+    return;
+  }
   latest_state_ = std::move(next_state);
+  if (position_targets_.empty()) {
+    for (std::size_t i = 0; i < mappings_.size(); ++i) {
+      position_targets_[mappings_[i].logical_name] = latest_state_.positions[i];
+    }
+  }
   last_state_received_ = latest_state_.sample_time;
   last_feedback_error_.clear();
   have_state_ = true;
@@ -439,7 +483,30 @@ RosTopicRobotDriver::Result RosTopicRobotDriver::publishCommandLocked(const hdi:
     }
   }
   try {
-    command_publisher_->publish(std::move(vendor_command));
+    if (group_publishers_.empty()) {
+      command_publisher_->publish(std::move(vendor_command));
+    } else {
+      // Forward-position controllers require the complete configured group in
+      // vendor order. Preserve other joints, but publish only affected groups.
+      auto updated = position_targets_;
+      std::unordered_set<std::string> affected;
+      for (std::size_t i = 0; i < count; ++i) {
+        const auto & mapping = mappings_[mapping_by_logical_name_.at(command.joint_names[i])];
+        updated[mapping.logical_name] = command.positions[i];
+        affected.insert(mapping.vendor_group);
+      }
+      for (const auto & group : affected) {
+        std_msgs::msg::Float64MultiArray output;
+        for (const auto & mapping : mappings_) {
+          if (mapping.vendor_group == group) {
+            output.data.push_back((updated.at(mapping.logical_name) -
+              mapping.vendor_to_logical_offset_rad) / mapping.vendor_to_logical_scale);
+          }
+        }
+        group_publishers_.at(group)->publish(output);
+      }
+      position_targets_ = std::move(updated);
+    }
   } catch (const std::exception & error) {
     return Result::failure(
       hdi::DriverError::kCommunication,

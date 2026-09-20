@@ -105,6 +105,7 @@ TEST_F(RosTopicRobotDriverTest, MapsNamesAndConvertsVendorCoordinatesBothWays)
   EXPECT_EQ(waiting.error, hdi::DriverError::kNoFeedback);
 
   sensor_msgs::msg::JointState vendor_state;
+  vendor_state.header.stamp = node_->now();
   vendor_state.name = {"vendor_right", "unused_joint", "vendor_left"};
   vendor_state.position = {0.4, 9.0, 0.2};
   vendor_state.velocity = {0.6, 9.0, -0.3};
@@ -146,6 +147,95 @@ TEST_F(RosTopicRobotDriverTest, MapsNamesAndConvertsVendorCoordinatesBothWays)
   EXPECT_TRUE(driver.stopJointStream());
   EXPECT_TRUE(driver.deactivate());
   EXPECT_TRUE(driver.disconnect());
+}
+
+
+TEST_F(RosTopicRobotDriverTest, SourceTimeSurvivesCachedReadsAndReplaysCannotRenewIt)
+{
+  hmsd::RosTopicRobotDriver driver;
+  ASSERT_TRUE(driver.attachRosNode(*node_));
+  ASSERT_TRUE(driver.configure(configuration()));
+  ASSERT_TRUE(driver.connect());
+  ASSERT_TRUE(driver.activate());
+  ASSERT_TRUE(driver.startJointStream());
+  spinUntil([this]() {return state_publisher_->get_subscription_count() > 0;});
+  sensor_msgs::msg::JointState message;
+  message.name = {"vendor_left", "vendor_right"};
+  message.position = {0.2, 0.4};
+  message.header.stamp = node_->now() - rclcpp::Duration::from_seconds(1.0);
+  state_publisher_->publish(message);
+  spinUntil([&]() {return driver.health().details.at("state_topic") == "/test_vendor/joint_state";});
+  executor_.spin_some();
+  hdi::JointState state;
+  EXPECT_FALSE(driver.readJointState(state));
+  message.header.stamp = node_->now() - rclcpp::Duration::from_seconds(.05);
+  const auto before = std::chrono::steady_clock::now();
+  state_publisher_->publish(message);
+  spinUntil([&]() {return static_cast<bool>(driver.readJointState(state));});
+  ASSERT_TRUE(driver.readJointState(state));
+  EXPECT_LT(state.sample_time, before - 40ms);
+  const auto sample = state.sample_time;
+  message.position = {9., 9.};
+  for (int n = 0; n < 30; ++n) {
+    state_publisher_->publish(message);  // Duplicate source stamp with altered data.
+    executor_.spin_some();
+    std::this_thread::sleep_for(10ms);
+  }
+  EXPECT_FALSE(driver.readJointState(state));
+  EXPECT_EQ(state.sample_time, sample);
+  message.header.stamp = node_->now();
+  message.position = {0.3, 0.4};
+  state_publisher_->publish(message);
+  spinUntil([&]() {return static_cast<bool>(driver.readJointState(state));});
+  EXPECT_TRUE(driver.readJointState(state));
+  EXPECT_GT(state.sample_time, sample);
+}
+
+TEST_F(RosTopicRobotDriverTest, GroupPositionTopicsPreserveOrderScalingAndOtherJointTargets)
+{
+  auto config = configuration();
+  config.joints = {{"a", "va", "arm_x", -2., .1}, {"b", "vb", "arm_x", 1., 0.},
+    {"c", "vc", "arm_y", 1., 0.}};
+  config.parameters.erase("command_topic");
+  config.parameters["command_topic.arm_x"] = "/test_vendor/group_x";
+  config.parameters["command_topic.arm_y"] = "/test_vendor/group_y";
+  std::vector<std::vector<double>> x, y;
+  auto xs = node_->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "/test_vendor/group_x", 10, [&](const std_msgs::msg::Float64MultiArray & m) {x.push_back(m.data);});
+  auto ys = node_->create_subscription<std_msgs::msg::Float64MultiArray>(
+    "/test_vendor/group_y", 10, [&](const std_msgs::msg::Float64MultiArray & m) {y.push_back(m.data);});
+  hmsd::RosTopicRobotDriver driver;
+  ASSERT_TRUE(driver.attachRosNode(*node_));
+  ASSERT_TRUE(driver.configure(config));
+  ASSERT_TRUE(driver.connect());
+  ASSERT_TRUE(driver.activate());
+  ASSERT_TRUE(driver.startJointStream());
+  spinUntil([this]() {return state_publisher_->get_subscription_count() > 0;});
+  sensor_msgs::msg::JointState message;
+  message.header.stamp = node_->now();
+  message.name = {"vc", "vb", "va"};
+  message.position = {.8, .4, .2};
+  state_publisher_->publish(message);
+  hdi::JointState state;
+  spinUntil([&]() {return static_cast<bool>(driver.readJointState(state));});
+  hdi::JointCommand cmd;
+  cmd.joint_names = {"a"}; cmd.positions = {.3};
+  ASSERT_TRUE(driver.writeJointCommand(cmd));
+  spinUntil([&]() {return x.size() == 1;});
+  ASSERT_EQ(x.size(), 1U);
+  EXPECT_NEAR(x.back()[0], -.1, 1e-12);
+  EXPECT_DOUBLE_EQ(x.back()[1], .4);
+  EXPECT_TRUE(y.empty());
+  cmd.joint_names = {"b"}; cmd.positions = {.7};
+  ASSERT_TRUE(driver.writeJointCommand(cmd));
+  spinUntil([&]() {return x.size() == 2;});
+  EXPECT_NEAR(x.back()[0], -.1, 1e-12);
+  EXPECT_DOUBLE_EQ(x.back()[1], .7);
+  ASSERT_TRUE(driver.stopAll());
+  spinUntil([&]() {return !y.empty() && x.size() == 3;});
+  EXPECT_DOUBLE_EQ(x.back()[0], .2);
+  EXPECT_DOUBLE_EQ(x.back()[1], .4);
+  EXPECT_EQ(y.back(), std::vector<double>{.8});
 }
 
 }  // namespace

@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -35,6 +36,7 @@ struct DriverRuntimeConfig
   // Required only when plugin_class implements Ros2DriverPlugin. The runtime node owns this
   // pointer for the complete DriverRuntime lifetime.
   rclcpp::Node * ros_node{nullptr};
+  std::chrono::milliseconds feedback_max_age{100};
 };
 
 struct DriverReadResult
@@ -49,6 +51,9 @@ struct DriverRuntimeStatus
   humanoid_driver_interface::DriverHealth health;
   bool watchdog_stopped{false};
   bool driver_fault_latched{false};
+  bool feedback_waiting{false};
+  std::uint64_t feedback_interruption_count{0};
+  std::uint64_t feedback_recovery_count{0};
   std::uint64_t watchdog_stop_count{0};
   std::uint64_t safety_stop_count{0};
   std::uint64_t rejected_command_count{0};
@@ -67,7 +72,8 @@ public:
   DriverRuntime & operator=(const DriverRuntime &) = delete;
 
   DriverReadResult read();
-  bool write(const humanoid_driver_interface::JointCommand & command, std::string & error);
+  bool write(const humanoid_driver_interface::JointCommand & command, std::string & error,
+    std::optional<std::chrono::steady_clock::time_point> valid_until = std::nullopt);
   void enforceWatchdog(std::chrono::steady_clock::time_point now);
   void stop(const std::string & reason, bool driver_fault = false);
   DriverRuntimeStatus status();
@@ -84,6 +90,8 @@ private:
   bool validateCommand(const JointCommand & command, std::string & reason) const;
   bool validateState(const JointState & state, std::string & reason) const;
   static bool allFinite(const std::vector<double> & values);
+  static bool feedbackUnavailable(const humanoid_driver_interface::DriverHealth & health);
+  void waitForFeedbackLocked(const std::string & reason);
   void stopLocked(const std::string & reason, bool driver_fault);
   void shutdownLocked() noexcept;
 
@@ -92,12 +100,16 @@ private:
   std::vector<JointMapping> joint_mappings_;
   std::unordered_map<std::string, JointMapping> mapping_by_logical_name_;
   std::chrono::milliseconds watchdog_timeout_;
+  std::chrono::milliseconds feedback_max_age_;
   std::chrono::steady_clock::time_point last_command_time_;
 
   mutable std::mutex mutex_;
   bool active_{false};
   bool watchdog_latched_{false};
   bool driver_fault_latched_{false};
+  bool feedback_waiting_{false};
+  std::uint64_t feedback_interruption_count_{0};
+  std::uint64_t feedback_recovery_count_{0};
   std::uint64_t watchdog_stop_count_{0};
   std::uint64_t safety_stop_count_{0};
   std::uint64_t rejected_command_count_{0};

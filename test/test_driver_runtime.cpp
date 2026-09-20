@@ -10,6 +10,8 @@
 
 #include "gtest/gtest.h"
 #include "humanoid_driver_runtime/driver_runtime.hpp"
+#include "humanoid_driver_runtime/diagnostics_runtime.hpp"
+#include "humanoid_driver_runtime/sample_timestamp.hpp"
 
 namespace hdi = humanoid_driver_interface;
 namespace hmsd = humanoid_driver_runtime;
@@ -129,6 +131,68 @@ TEST(DriverRuntime, ConfigurationRejectsDuplicateMappings)
   auto invalid = config();
   invalid.plugin_configuration.joints[1].logical_name = "joint_a";
   EXPECT_THROW(hmsd::DriverRuntime runtime(invalid), std::invalid_argument);
+}
+
+TEST(DriverRuntime, CommandFailureRemainsLatchedWithHealthyFeedback)
+{
+  auto cfg = config();
+  cfg.plugin_configuration.parameters["inject_write_failure"] = "true";
+  hmsd::DriverRuntime runtime(cfg);
+  ASSERT_TRUE(runtime.read().successful);
+  std::string error;
+  EXPECT_FALSE(runtime.write(command(), error));
+  const auto fault = runtime.status();
+  EXPECT_TRUE(fault.driver_fault_latched);
+  EXPECT_TRUE(fault.health.communication_ok);
+  EXPECT_FALSE(runtime.read().successful);
+  EXPECT_FALSE(runtime.write(command(), error));
+  EXPECT_EQ(runtime.status().last_stop_reason, fault.last_stop_reason);
+  EXPECT_EQ(runtime.status().feedback_recovery_count, 0U);
+
+  const auto report = hmsd::DiagnosticsRuntime().makeDriverReport(
+    fault, rclcpp::Time(0), "/test_driver", cfg.plugin_class);
+  ASSERT_EQ(report.status.size(), 1U);
+  EXPECT_EQ(report.status.front().level, diagnostic_msgs::msg::DiagnosticStatus::ERROR);
+  EXPECT_NE(report.status.front().message.find("latched"), std::string::npos);
+}
+
+TEST(DriverRuntime, RepeatedFaultReportsPreserveFirstCauseAndStopOnce)
+{
+  hmsd::DriverRuntime runtime(config());
+  runtime.stop("first failure", true);
+  runtime.stop("second failure", true);
+  EXPECT_EQ(runtime.status().last_stop_reason, "first failure");
+  EXPECT_EQ(runtime.status().safety_stop_count, 1U);
+}
+
+
+TEST(DriverRuntime, ExpiredExecutionDeadlineDoesNotResumeWatchdog)
+{
+  hmsd::DriverRuntime runtime(config(20ms));
+  runtime.enforceWatchdog(std::chrono::steady_clock::now() + 30ms);
+  ASSERT_TRUE(runtime.status().watchdog_stopped);
+  std::string error;
+  EXPECT_FALSE(runtime.write(command(), error, std::chrono::steady_clock::now() - 1ms));
+  EXPECT_TRUE(runtime.status().watchdog_stopped);
+  EXPECT_EQ(runtime.status().rejected_command_count, 1U);
+  EXPECT_TRUE(runtime.write(command(), error, std::chrono::steady_clock::now() + 100ms));
+  EXPECT_FALSE(runtime.status().watchdog_stopped);
+}
+
+TEST(SampleTimestamp, PreservesAgeRejectsReplayAndRecoversAfterRosClockReset)
+{
+  hmsd::SampleTimestamp guard;
+  const auto received = std::chrono::steady_clock::now();
+  auto sampled = received;
+  EXPECT_FALSE(guard.accept(0, 1000000000, received, 100ms, sampled));
+  EXPECT_FALSE(guard.accept(800000000, 1000000000, received, 100ms, sampled));
+  EXPECT_FALSE(guard.accept(1100000000, 1000000000, received, 100ms, sampled));
+  ASSERT_TRUE(guard.accept(960000000, 1000000000, received, 100ms, sampled));
+  EXPECT_EQ(sampled, received - 40ms);
+  EXPECT_FALSE(guard.accept(960000000, 1010000000, received + 10ms, 100ms, sampled));
+  EXPECT_FALSE(guard.accept(950000000, 1010000000, received + 10ms, 100ms, sampled));
+  ASSERT_TRUE(guard.accept(190000000, 200000000, received + 20ms, 100ms, sampled));
+  EXPECT_EQ(sampled, received + 10ms);
 }
 
 }  // namespace

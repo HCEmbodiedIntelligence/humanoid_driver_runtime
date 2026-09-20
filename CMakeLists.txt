@@ -13,6 +13,7 @@ find_package(humanoid_driver_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 add_library(humanoid_driver_runtime_core SHARED
   src/diagnostics_runtime.cpp
@@ -44,7 +45,7 @@ ament_target_dependencies(humanoid_ros_topic_driver
   humanoid_driver_interface
   pluginlib
   rclcpp
-  sensor_msgs)
+  sensor_msgs std_msgs)
 
 pluginlib_export_plugin_description_file(
   humanoid_driver_interface plugins/driver_plugins.xml)
@@ -83,11 +84,25 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
+
+  ament_add_pytest_test(test_command_boundaries test/test_command_boundaries.py
+    TIMEOUT 30
+    ENV "ROS_LOCALHOST_ONLY=1"
+      "DRIVER_TEST_EXECUTABLE=${CMAKE_CURRENT_BINARY_DIR}/humanoid_driver_runtime_node"
+      "DRIVER_TEST_PLUGIN_XML=${CMAKE_CURRENT_SOURCE_DIR}/plugins/driver_plugins.xml")
+
+  ament_add_gtest(test_activity_log test/test_activity_log.cpp)
+  target_include_directories(test_activity_log PRIVATE include)
 
   ament_add_gtest(test_driver_runtime test/test_driver_runtime.cpp)
   target_link_libraries(test_driver_runtime humanoid_driver_runtime_core)
   target_compile_definitions(test_driver_runtime PRIVATE
     HUMANOID_RUNTIME_TEST_PLUGIN_XML="${CMAKE_CURRENT_SOURCE_DIR}/plugins/driver_plugins.xml")
+
+  ament_add_gtest(test_feedback_recovery test/test_feedback_recovery.cpp)
+  target_link_libraries(test_feedback_recovery humanoid_driver_runtime_core)
+  ament_target_dependencies(test_feedback_recovery rclcpp sensor_msgs)
 
   ament_add_gtest(test_mock_lifecycle test/test_mock_lifecycle.cpp)
   target_link_libraries(test_mock_lifecycle humanoid_mock_driver)
@@ -114,6 +129,6 @@ ament_export_dependencies(
   humanoid_driver_interface
   pluginlib
   rclcpp
-  sensor_msgs)
+  sensor_msgs std_msgs)
 
 ament_package()

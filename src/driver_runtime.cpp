@@ -20,6 +20,7 @@ namespace humanoid_driver_runtime
 DriverRuntime::DriverRuntime(const DriverRuntimeConfig & config)
 : joint_mappings_(config.plugin_configuration.joints),
   watchdog_timeout_(config.command_watchdog),
+  feedback_max_age_(config.feedback_max_age),
   last_command_time_(std::chrono::steady_clock::now())
 {
   validateConfiguration(config);
@@ -94,6 +95,12 @@ DriverReadResult DriverRuntime::read()
         // once its finite startup grace period has expired.
         return {false, {}, result.message};
       }
+      if (result.error == hdi::DriverError::kCommunication &&
+        feedbackUnavailable(plugin_->health()))
+      {
+        waitForFeedbackLocked("waiting for driver feedback: " + result.message);
+        return {false, {}, last_stop_reason_};
+      }
       stopLocked("joint-state read failed: " + result.message, true);
       return {false, {}, last_stop_reason_};
     }
@@ -106,12 +113,50 @@ DriverReadResult DriverRuntime::read()
     stopLocked(reason, true);
     return {false, {}, reason};
   }
+  const auto now = std::chrono::steady_clock::now();
+  if (state.sample_time > now || now - state.sample_time >= feedback_max_age_) {
+    waitForFeedbackLocked("driver sample timestamp is stale or in the future");
+    return {false, {}, last_stop_reason_};
+  }
+  if (feedback_waiting_) {
+    try {
+      const auto health = plugin_->health();
+      if (feedbackUnavailable(health)) {
+        return {false, {}, last_stop_reason_};
+      }
+      if (!health.communication_ok || !health.connected || !health.active ||
+        health.level == hdi::HealthLevel::kError || health.level == hdi::HealthLevel::kStale)
+      {
+        stopLocked("driver cannot recover feedback: " + health.message, true);
+        return {false, {}, last_stop_reason_};
+      }
+      // Rebase the driver's hold/partial-command targets on the recovered measured state.
+      // Reading feedback never replays the last motion target.
+      const auto held = plugin_->stopAll();
+      if (!held) {
+        stopLocked("failed to hold recovered feedback: " + held.message, true);
+        return {false, {}, last_stop_reason_};
+      }
+    } catch (const std::exception & error) {
+      stopLocked("feedback recovery exception: " + std::string(error.what()), true);
+      return {false, {}, last_stop_reason_};
+    }
+    feedback_waiting_ = false;
+    ++feedback_recovery_count_;
+    watchdog_latched_ = true;  // Remain holding until a new command arrives.
+  }
   return {true, std::move(state), {}};
 }
 
-bool DriverRuntime::write(const JointCommand & command, std::string & error)
+bool DriverRuntime::write(const JointCommand & command, std::string & error,
+  const std::optional<std::chrono::steady_clock::time_point> valid_until)
 {
   std::lock_guard<std::mutex> lock(mutex_);
+  if (valid_until && std::chrono::steady_clock::now() >= *valid_until) {
+    error = "joint command expired before driver execution";
+    ++rejected_command_count_;
+    return false;
+  }
   if (!active_ || !plugin_) {
     error = "driver runtime is inactive";
     ++rejected_command_count_;
@@ -119,6 +164,11 @@ bool DriverRuntime::write(const JointCommand & command, std::string & error)
   }
   if (driver_fault_latched_) {
     error = "driver fault is latched: " + last_stop_reason_;
+    ++rejected_command_count_;
+    return false;
+  }
+  if (feedback_waiting_) {
+    error = "waiting for fresh driver feedback";
     ++rejected_command_count_;
     return false;
   }
@@ -142,6 +192,13 @@ bool DriverRuntime::write(const JointCommand & command, std::string & error)
     const auto result = plugin_->writeJointCommand(adapted);
     if (!result) {
       error = "joint-command write failed: " + result.message;
+      if (result.error == hdi::DriverError::kCommunication &&
+        feedbackUnavailable(plugin_->health()))
+      {
+        waitForFeedbackLocked(error);
+        ++rejected_command_count_;
+        return false;
+      }
       stopLocked(error, true);
       return false;
     }
@@ -158,7 +215,7 @@ bool DriverRuntime::write(const JointCommand & command, std::string & error)
 void DriverRuntime::enforceWatchdog(const std::chrono::steady_clock::time_point now)
 {
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!active_ || driver_fault_latched_ || watchdog_latched_) {
+  if (!active_ || driver_fault_latched_ || feedback_waiting_ || watchdog_latched_) {
     return;
   }
   if (now - last_command_time_ > watchdog_timeout_) {
@@ -178,35 +235,34 @@ DriverRuntimeStatus DriverRuntime::status()
 {
   std::lock_guard<std::mutex> lock(mutex_);
   DriverRuntimeStatus result;
-  result.watchdog_stopped = watchdog_latched_;
-  result.driver_fault_latched = driver_fault_latched_;
-  result.watchdog_stop_count = watchdog_stop_count_;
-  result.safety_stop_count = safety_stop_count_;
-  result.rejected_command_count = rejected_command_count_;
-  result.last_stop_reason = last_stop_reason_;
   if (!plugin_) {
     result.health.message = "driver plugin is not loaded";
     return result;
   }
   try {
     result.health = plugin_->health();
-    if (result.health.level == hdi::HealthLevel::kError ||
+    if (feedbackUnavailable(result.health)) {
+      waitForFeedbackLocked("waiting for driver feedback: " + result.health.message);
+    } else if (result.health.level == hdi::HealthLevel::kError ||
       result.health.level == hdi::HealthLevel::kStale || !result.health.communication_ok)
     {
       stopLocked("driver health reports an error: " + result.health.message, true);
-      result.driver_fault_latched = true;
-      result.safety_stop_count = safety_stop_count_;
-      result.last_stop_reason = last_stop_reason_;
     }
   } catch (const std::exception & error) {
     result.health.level = hdi::HealthLevel::kError;
     result.health.communication_ok = false;
     result.health.message = "health exception: " + std::string(error.what());
     stopLocked(result.health.message, true);
-    result.driver_fault_latched = true;
-    result.safety_stop_count = safety_stop_count_;
-    result.last_stop_reason = last_stop_reason_;
   }
+  result.watchdog_stopped = watchdog_latched_;
+  result.driver_fault_latched = driver_fault_latched_;
+  result.feedback_waiting = feedback_waiting_;
+  result.feedback_interruption_count = feedback_interruption_count_;
+  result.feedback_recovery_count = feedback_recovery_count_;
+  result.watchdog_stop_count = watchdog_stop_count_;
+  result.safety_stop_count = safety_stop_count_;
+  result.rejected_command_count = rejected_command_count_;
+  result.last_stop_reason = last_stop_reason_;
   return result;
 }
 
@@ -220,8 +276,8 @@ void DriverRuntime::validateConfiguration(const DriverRuntimeConfig & config)
   if (config.plugin_class.empty()) {
     throw std::invalid_argument("plugin_class is required; no fallback driver is allowed");
   }
-  if (config.command_watchdog.count() <= 0) {
-    throw std::invalid_argument("command watchdog must be positive");
+  if (config.command_watchdog.count() <= 0 || config.feedback_max_age.count() <= 0) {
+    throw std::invalid_argument("command watchdog and feedback age must be positive");
   }
   if (config.plugin_configuration.joints.empty()) {
     throw std::invalid_argument("at least one driver joint mapping is required");
@@ -321,10 +377,31 @@ bool DriverRuntime::allFinite(const std::vector<double> & values)
     values.begin(), values.end(), [](const double value) {return std::isfinite(value);});
 }
 
+bool DriverRuntime::feedbackUnavailable(const hdi::DriverHealth & health)
+{
+  // kStale on an active, connected driver means its state stream is missing/late.
+  // Hardware errors, disconnection, and command failures still latch a fault.
+  return health.level == hdi::HealthLevel::kStale && health.connected && health.active;
+}
+
+void DriverRuntime::waitForFeedbackLocked(const std::string & reason)
+{
+  if (driver_fault_latched_ || feedback_waiting_) {
+    return;
+  }
+  feedback_waiting_ = true;
+  ++feedback_interruption_count_;
+  stopLocked(reason, false);
+}
+
 void DriverRuntime::stopLocked(const std::string & reason, const bool driver_fault)
 {
+  if (driver_fault_latched_) {
+    return;  // Preserve the first fault and avoid repeated stop commands on every health poll.
+  }
   if (driver_fault) {
     driver_fault_latched_ = true;
+    feedback_waiting_ = false;
   }
   ++safety_stop_count_;
   last_stop_reason_ = reason;

@@ -22,6 +22,13 @@ diagnostic_msgs::msg::DiagnosticArray DiagnosticsRuntime::makeDriverReport(
   status.hardware_id = plugin_class;
   status.level = static_cast<std::uint8_t>(runtime_status.health.level);
   status.message = runtime_status.health.message;
+  if (runtime_status.driver_fault_latched) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::ERROR;
+    status.message = "driver fault is latched: " + runtime_status.last_stop_reason;
+  } else if (runtime_status.feedback_waiting) {
+    status.level = diagnostic_msgs::msg::DiagnosticStatus::STALE;
+    status.message = "waiting for valid driver feedback; motion is held";
+  }
   const auto add = [&status](const std::string & key, const std::string & value) {
       diagnostic_msgs::msg::KeyValue item;
       item.key = key;
@@ -33,6 +40,9 @@ diagnostic_msgs::msg::DiagnosticArray DiagnosticsRuntime::makeDriverReport(
   add("active", runtime_status.health.active ? "true" : "false");
   add("watchdog_stopped", runtime_status.watchdog_stopped ? "true" : "false");
   add("driver_fault_latched", runtime_status.driver_fault_latched ? "true" : "false");
+  add("feedback_waiting", runtime_status.feedback_waiting ? "true" : "false");
+  add("feedback_interruptions", std::to_string(runtime_status.feedback_interruption_count));
+  add("feedback_recoveries", std::to_string(runtime_status.feedback_recovery_count));
   add("watchdog_stops", std::to_string(runtime_status.watchdog_stop_count));
   add("safety_stops", std::to_string(runtime_status.safety_stop_count));
   add("rejected_commands", std::to_string(runtime_status.rejected_command_count));

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <mutex>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -14,6 +15,8 @@
 #include "humanoid_driver_interface/ros2_driver_plugin.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "std_msgs/msg/float64_multi_array.hpp"
+#include "humanoid_driver_runtime/sample_timestamp.hpp"
 
 namespace humanoid_driver_runtime
 {
@@ -57,6 +60,10 @@ private:
   rclcpp::Node * node_{nullptr};
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr command_publisher_;
+  std::map<std::string, rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr>
+    group_publishers_;
+  std::map<std::string, double> position_targets_;
+  SampleTimestamp source_timestamp_;
 
   std::vector<Mapping> mappings_;
   std::unordered_map<std::string, std::size_t> mapping_by_logical_name_;

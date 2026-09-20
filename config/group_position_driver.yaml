@@ -1,0 +1,17 @@
+# Replace all names/topics/order with the target robot's controller configuration.
+humanoid_driver_runtime:
+  ros__parameters:
+    plugin_class: humanoid_driver_runtime/RosTopicRobotDriver
+    joint_names: [left_joint1, left_joint2, right_joint1, right_joint2]
+    vendor_joint_names: [left_joint1, left_joint2, right_joint1, right_joint2]
+    vendor_joint_groups: [left_arm, left_arm, right_arm, right_arm]
+    vendor_to_logical_scales: [1.0, 1.0, 1.0, 1.0]
+    vendor_to_logical_offsets_rad: [0.0, 0.0, 0.0, 0.0]
+    command_max_age_ms: 100
+    feedback_max_age_ms: 100
+    plugin_parameters:
+      - state_topic=/joint_states
+      - command_topic.left_arm=/left_position_controller/commands
+      - command_topic.right_arm=/right_position_controller/commands
+      - state_timeout_s=0.25
+      - startup_grace_s=3.0

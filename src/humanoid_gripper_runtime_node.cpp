@@ -139,7 +139,7 @@ private:
     } else {
       feedback_ready_ = false;
       RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000, "gripper feedback unavailable: %s",
+        get_logger(), *get_clock(), 30000, "gripper feedback unavailable: %s",
         feedback.message.c_str());
     }
     runtime_->enforceWatchdog(std::chrono::steady_clock::now());
@@ -149,7 +149,7 @@ private:
   {
     if (!feedback_ready_) {
       RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 2000,
+        get_logger(), *get_clock(), 30000,
         "ignoring gripper command until valid measured feedback is available");
       return;
     }
@@ -167,7 +167,7 @@ private:
           return !name.empty() && seen.insert(name).second;
         }))
       {
-        RCLCPP_ERROR(get_logger(), "malformed shared gripper command rejected");
+        RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 30000, "malformed shared gripper command rejected");
         return;
       }
       command = {};
@@ -181,7 +181,7 @@ private:
     }
     std::string error;
     if (!runtime_->write(command, error)) {
-      RCLCPP_ERROR(get_logger(), "platform gripper command rejected: %s", error.c_str());
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 30000, "platform gripper command rejected: %s", error.c_str());
     }
   }
 
