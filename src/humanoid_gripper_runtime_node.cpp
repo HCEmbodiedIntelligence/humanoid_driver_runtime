@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <memory>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -14,6 +16,8 @@
 #include "humanoid_driver_interface/types.hpp"
 #include "humanoid_driver_runtime/diagnostics_runtime.hpp"
 #include "humanoid_driver_runtime/gripper_runtime.hpp"
+#include "humanoid_driver_runtime/sample_timestamp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 
@@ -107,6 +111,26 @@ public:
     }
 
     runtime_ = std::make_unique<GripperRuntime>(config);
+    hc_safety_ = declare_parameter<bool>("hc_safety_enabled", false);
+    feedback_max_age_ms_ = declare_parameter<int>("feedback_max_age_ms", 250);
+    command_max_age_ms_ = declare_parameter<int>("command_max_age_ms", 250);
+    if (feedback_max_age_ms_ <= 0 || command_max_age_ms_ <= 0) {
+      throw std::invalid_argument("feedback/command maximum ages must be positive");
+    }
+    for (const auto & name : names) {command_timestamps_.emplace(name, SampleTimestamp{});}
+    if (hc_safety_) {
+      stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
+        declare_parameter<std::string>("emergency_stop_topic", "/control/emergency_stop"), 1,
+        [this](const std_msgs::msg::Bool & msg) {if (msg.data) {revoke();}});
+      enable_subscription_ = create_subscription<std_msgs::msg::Bool>(
+        declare_parameter<std::string>("output_enable_topic", "/control/teleop/enabled"), 1,
+        [this](const std_msgs::msg::Bool & msg) {
+          revoke();
+          if (msg.data && feedback_ready_ && !runtime_->status().driver_fault_latched) {
+            stopped_ = false;
+          }
+        });
+    }
     state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
       state_topic, rclcpp::QoS(10).reliable());
     command_subscription_ = create_subscription<sensor_msgs::msg::JointState>(
@@ -125,29 +149,45 @@ public:
   }
 
 private:
+  void revoke()
+  {
+    stopped_ = true;
+    command_cutoff_ = now().nanoseconds();
+    runtime_->stop("HC gripper permission revoked");
+  }
+
   void controlTick()
   {
     const auto feedback = runtime_->read();
-    if (feedback.successful) {
+    const auto clock_now = std::chrono::steady_clock::now();
+    const auto age = clock_now - feedback.state.sample_time;
+    const auto age_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(age);
+    const auto ros_now = now();
+    const bool fresh = feedback.successful && age >= std::chrono::steady_clock::duration::zero() &&
+      age <= std::chrono::milliseconds(feedback_max_age_ms_) && ros_now.nanoseconds() > age_ns.count();
+    if (fresh) {
       feedback_ready_ = true;
-      sensor_msgs::msg::JointState message;
-      message.header.stamp = now();
-      message.name = feedback.state.gripper_names;
-      message.position = feedback.state.positions;
-      message.effort = feedback.state.efforts;
-      state_publisher_->publish(std::move(message));
+      if (!last_sample_ || feedback.state.sample_time > *last_sample_) {
+        sensor_msgs::msg::JointState message;
+        message.header.stamp = ros_now - rclcpp::Duration(age_ns);
+        message.name = feedback.state.gripper_names;
+        message.position = feedback.state.positions;
+        message.effort = feedback.state.efforts;
+        state_publisher_->publish(std::move(message));
+        last_sample_ = feedback.state.sample_time;
+      }
     } else {
+      if (hc_safety_ && feedback_ready_) {revoke();}
       feedback_ready_ = false;
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 30000, "gripper feedback unavailable: %s",
-        feedback.message.c_str());
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 30000,
+        "gripper feedback unavailable or stale: %s", feedback.message.c_str());
     }
-    runtime_->enforceWatchdog(std::chrono::steady_clock::now());
+    runtime_->enforceWatchdog(clock_now);
   }
 
   void command(const sensor_msgs::msg::JointState & message)
   {
-    if (!feedback_ready_) {
+    if (stopped_ || !feedback_ready_) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 30000,
         "ignoring gripper command until valid measured feedback is available");
@@ -179,6 +219,20 @@ private:
       }
       if (command.gripper_names.empty()) {return;}
     }
+    if (hc_safety_) {
+      const auto received = std::chrono::steady_clock::now();
+      auto sampled = received;
+      const std::int64_t stamp = static_cast<std::int64_t>(message.header.stamp.sec) *
+        1000000000LL + message.header.stamp.nanosec;
+      if (stamp <= command_cutoff_ || message.header.stamp.nanosec >= 1000000000U) {return;}
+      auto updated = command_timestamps_;
+      for (const auto & name : command.gripper_names) {
+        const auto it = updated.find(name);
+        if (it == updated.end() || !it->second.accept(stamp, now().nanoseconds(), received,
+            std::chrono::milliseconds(command_max_age_ms_), sampled)) {return;}
+      }
+      command_timestamps_ = std::move(updated);
+    }
     std::string error;
     if (!runtime_->write(command, error)) {
       RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 30000, "platform gripper command rejected: %s", error.c_str());
@@ -200,6 +254,12 @@ private:
   rclcpp::Publisher<diagnostic_msgs::msg::DiagnosticArray>::SharedPtr diagnostic_publisher_;
   rclcpp::TimerBase::SharedPtr control_timer_;
   rclcpp::TimerBase::SharedPtr diagnostic_timer_;
+  bool hc_safety_{false}, stopped_{false};
+  int feedback_max_age_ms_{250}, command_max_age_ms_{250};
+  std::int64_t command_cutoff_{0};
+  std::optional<std::chrono::steady_clock::time_point> last_sample_;
+  std::map<std::string, SampleTimestamp> command_timestamps_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_subscription_, enable_subscription_;
   bool feedback_ready_{false};
   bool filter_unowned_{false};
   std::unordered_set<std::string> owned_names_;

@@ -57,7 +57,7 @@ ament_target_dependencies(humanoid_driver_runtime_node
   diagnostic_msgs
   humanoid_driver_interface
   rclcpp
-  sensor_msgs)
+  sensor_msgs std_msgs)
 
 add_executable(humanoid_gripper_runtime_node src/humanoid_gripper_runtime_node.cpp)
 target_compile_options(humanoid_gripper_runtime_node PRIVATE -Wall -Wextra -Wpedantic)
@@ -66,7 +66,7 @@ ament_target_dependencies(humanoid_gripper_runtime_node
   diagnostic_msgs
   humanoid_driver_interface
   rclcpp
-  sensor_msgs)
+  sensor_msgs std_msgs)
 
 install(TARGETS
   humanoid_driver_runtime_core

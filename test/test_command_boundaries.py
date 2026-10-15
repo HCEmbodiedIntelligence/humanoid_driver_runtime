@@ -6,17 +6,19 @@ import time
 import uuid
 from pathlib import Path
 
+import pytest
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Bool, Float64MultiArray
 import yaml
 
 
-def test_source_feedback_age_and_latest_commands(tmp_path):
+@pytest.mark.parametrize("hc_safety", [False, True])
+def test_source_feedback_age_and_latest_commands(tmp_path, hc_safety):
     executable = os.environ['DRIVER_TEST_EXECUTABLE']
     plugin_xml = os.environ['DRIVER_TEST_PLUGIN_XML']
     domain = 180 + os.getpid() % 40
@@ -34,6 +36,10 @@ def test_source_feedback_age_and_latest_commands(tmp_path):
         'plugin_parameters': ['state_topic=' + prefix + '/vendor',
             'command_topic.left=' + prefix + '/left', 'command_topic.right=' + prefix + '/right',
             'state_timeout_s=0.25', 'startup_grace_s=3.0']}
+    params.update(hc_safety_enabled=hc_safety,
+                  hardware_ready_topic=prefix + '/ready',
+                  emergency_stop_topic=prefix + '/stop',
+                  output_enable_topic=prefix + '/enabled')
     config = tmp_path / 'params.yaml'
     config.write_text(yaml.safe_dump({'/**': {'ros__parameters': params}}))
     context = Context()
@@ -43,8 +49,12 @@ def test_source_feedback_age_and_latest_commands(tmp_path):
     executor.add_node(node)
     vendor = node.create_publisher(JointState, prefix + '/vendor', qos_profile_sensor_data)
     command = node.create_publisher(JointState, prefix + '/command', 10)
+    enable = node.create_publisher(Bool, prefix + '/enabled', 1)
+    stop = node.create_publisher(Bool, prefix + '/stop', 1)
+    ready = []
     states, left, right = [], [], []
     subscriptions = [
+        node.create_subscription(Bool, prefix + "/ready", lambda m: ready.append(m.data), 1),
         node.create_subscription(JointState, prefix + '/state', states.append, qos_profile_sensor_data),
         node.create_subscription(Float64MultiArray, prefix + '/left', lambda m: left.append(list(m.data)), 10),
         node.create_subscription(Float64MultiArray, prefix + '/right', lambda m: right.append(list(m.data)), 10)]
@@ -94,6 +104,11 @@ def test_source_feedback_age_and_latest_commands(tmp_path):
             assert len(states) == before
             pump(.15)  # Valid feedback resumes automatically.
             assert len(states) > before
+            if hc_safety:
+                assert ready[-1] is False, 'feedback recovery must not undo a stop'
+                enable.publish(Bool(data=True))
+                pump(.04)
+                assert ready[-1] is True
             left.clear()
             send([names[0]], [.91], old)
             pump(.035)
@@ -120,6 +135,23 @@ def test_source_feedback_age_and_latest_commands(tmp_path):
             pump(.04)
             assert left[before_l:] == [[.32, 0.]], left[before_l:]
             assert right[before_r:] == [[-.32, 0.]], right[before_r:]
+            if hc_safety:
+                before_stop = node.get_clock().now().to_msg()
+                stop.publish(Bool(data=True))
+                pump(.025)
+                assert ready[-1] is False
+                send([names[0]], [.77])
+                pump(.025)
+                assert not any(v[0] == .77 for v in left)
+                enable.publish(Bool(data=True))
+                pump(.025)
+                assert ready[-1] is True
+                send([names[0]], [.78], before_stop)
+                pump(.015)
+                assert not any(v[0] == .78 for v in left)
+                send([names[0]], [.79])
+                pump(.025)
+                assert any(v[0] == .79 for v in left)
             # Expired packets cannot keep the command watchdog alive.
             for _ in range(5):
                 send([names[0]], [.99], old)

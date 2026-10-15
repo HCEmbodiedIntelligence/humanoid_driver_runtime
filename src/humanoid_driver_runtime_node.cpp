@@ -21,6 +21,7 @@
 #include "humanoid_driver_runtime/sample_timestamp.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace hdi = humanoid_driver_interface;
 
@@ -131,6 +132,23 @@ public:
     }
 
     runtime_ = std::make_unique<DriverRuntime>(config);
+    // Opt-in HC endpoints leave the legacy runtime configuration unchanged.
+    hc_safety_ = declare_parameter<bool>("hc_safety_enabled", false);
+    if (hc_safety_) {
+      ready_publisher_ = create_publisher<std_msgs::msg::Bool>(
+        declare_parameter<std::string>("hardware_ready_topic", "/status/hardware/ready"), 1);
+      stop_subscription_ = create_subscription<std_msgs::msg::Bool>(
+        declare_parameter<std::string>("emergency_stop_topic", "/control/emergency_stop"), 1,
+        [this](const std_msgs::msg::Bool & msg) {if (msg.data) {revoke(true);}});
+      enable_subscription_ = create_subscription<std_msgs::msg::Bool>(
+        declare_parameter<std::string>("output_enable_topic", "/control/teleop/enabled"), 1,
+        [this](const std_msgs::msg::Bool & msg) {
+          revoke(true);
+          if (msg.data && feedback_ready_ && !runtime_->status().driver_fault_latched) {
+            stopped_ = false;
+          }
+        });
+    }
     activity_log_ = std::make_unique<JointActivityLog>(
       joint_names, vendor_joint_groups, std::chrono::duration<double, std::milli>(command_watchdog_ms));
     state_publisher_ = create_publisher<sensor_msgs::msg::JointState>(
@@ -165,12 +183,34 @@ public:
   }
 
 private:
+  void publishReady()
+  {
+    if (ready_publisher_) {
+      std_msgs::msg::Bool message;
+      const auto status = runtime_->status();
+      message.data = feedback_ready_ && !stopped_ && !status.driver_fault_latched &&
+        !status.feedback_waiting;
+      ready_publisher_->publish(message);
+    }
+  }
+
+  void revoke(bool stop)
+  {
+    pending_commands_.clear();
+    command_cutoff_ = now().nanoseconds();
+    stopped_ = stop;
+    if (stop) {runtime_->stop("HC output permission revoked");}
+    publishReady();
+  }
+
   void controlTick()
   {
     const auto feedback = runtime_->read();
     if (!feedback.successful) {
       activity_log_->unavailable();
+      if (hc_safety_ && feedback_ready_) {revoke(true);}
       feedback_ready_ = false;
+      publishReady();
       pending_commands_.clear();
       runtime_->enforceWatchdog(std::chrono::steady_clock::now());
       return;
@@ -190,6 +230,8 @@ private:
       if (ros_now.nanoseconds() <= age.count()) {
         pending_commands_.clear();
         feedback_ready_ = false;
+        if (hc_safety_) {revoke(true);}
+        publishReady();
         runtime_->enforceWatchdog(clock_now);
         return;
       }
@@ -205,7 +247,8 @@ private:
       last_published_sample_ = feedback.state.sample_time;
     }
     runtime_->enforceWatchdog(clock_now);
-    flushCommands();
+    publishReady();
+    if (!stopped_) {flushCommands();}
   }
 
   struct PendingJoint
@@ -219,7 +262,7 @@ private:
   void commandCallback(const sensor_msgs::msg::JointState & message)
   {
     const auto count = message.name.size();
-    if (!feedback_ready_ || count == 0 || message.position.size() != count ||
+    if (stopped_ || !feedback_ready_ || count == 0 || message.position.size() != count ||
       (!message.velocity.empty() && message.velocity.size() != count) ||
       (!message.effort.empty() && message.effort.size() != count) ||
       !allFinite(message.position) || !allFinite(message.velocity) || !allFinite(message.effort) ||
@@ -231,6 +274,7 @@ private:
     const auto ros_now = now().nanoseconds();
     const std::int64_t stamp = static_cast<std::int64_t>(message.header.stamp.sec) *
       1000000000LL + message.header.stamp.nanosec;
+    if (hc_safety_ && stamp <= command_cutoff_) {return;}
     std::set<std::string> names;
     auto updated = command_timestamps_;
     auto sampled = received;
@@ -340,6 +384,10 @@ private:
   bool have_feedback_log_{false};
   std::chrono::steady_clock::time_point last_feedback_log_;
   std::uint64_t logged_feedback_recoveries_{0};
+  bool hc_safety_{false}, stopped_{false};
+  std::int64_t command_cutoff_{0};
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_publisher_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr stop_subscription_, enable_subscription_;
   bool feedback_ready_{false};
   int command_max_age_ms_{100};
   std::map<std::string, SampleTimestamp> command_timestamps_;
