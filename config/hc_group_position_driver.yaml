@@ -6,7 +6,7 @@ humanoid_driver_runtime:
     platform_joint_command_topic: /action/joint_states
     hardware_ready_topic: /status/hardware/ready
     emergency_stop_topic: /control/emergency_stop
-    output_enable_topic: /control/teleop/enabled
+    output_enable_topic: /control/hardware/enabled
     plugin_class: humanoid_driver_runtime/RosTopicRobotDriver
     joint_names: [left_joint1, left_joint2, right_joint1, right_joint2]
     vendor_joint_names: [left_joint1, left_joint2, right_joint1, right_joint2]

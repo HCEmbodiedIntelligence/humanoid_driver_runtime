@@ -141,7 +141,7 @@ public:
         declare_parameter<std::string>("emergency_stop_topic", "/control/emergency_stop"), 1,
         [this](const std_msgs::msg::Bool & msg) {if (msg.data) {revoke(true);}});
       enable_subscription_ = create_subscription<std_msgs::msg::Bool>(
-        declare_parameter<std::string>("output_enable_topic", "/control/teleop/enabled"), 1,
+        declare_parameter<std::string>("output_enable_topic", "/control/hardware/enabled"), 1,
         [this](const std_msgs::msg::Bool & msg) {
           revoke(true);
           if (msg.data && feedback_ready_ && !runtime_->status().driver_fault_latched) {
